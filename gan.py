@@ -6,7 +6,7 @@ import datetime
 #  mnist = tf.contrib.learn.datasets.load_dataset("mnist")
 from tensorflow.examples.tutorials.mnist import input_data
 
-def discriminator(images, reuse_variables=None):
+def discriminator(images, keep_prob, reuse_variables=None):
   with tf.variable_scope(tf.get_variable_scope(), reuse=reuse_variables) as scope:
     dw1 = tf.get_variable(name='dw1', shape=[5, 5, 1, 32],
         initializer=tf.truncated_normal_initializer(stddev=0.02))
@@ -16,6 +16,7 @@ def discriminator(images, reuse_variables=None):
     d1 = d1 + db1
     d1 = tf.nn.relu(d1)
     d1 = tf.nn.avg_pool(d1, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+    d1 = tf.nn.dropout(d1, keep_prob)
 
 
     dw2 = tf.get_variable(name='dw2', shape=[5, 5, 32, 64],
@@ -26,6 +27,7 @@ def discriminator(images, reuse_variables=None):
     d2 = d2 + db2
     d2 = tf.nn.relu(d2)
     d2 = tf.nn.avg_pool(d2, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+    d2 = tf.nn.dropout(d2, keep_prob)
 
     dw3 = tf.get_variable(name='dw3', shape=[7*7*64, 1024],
         initializer=tf.truncated_normal_initializer(stddev=0.02))
@@ -34,6 +36,7 @@ def discriminator(images, reuse_variables=None):
     d3 = tf.reshape(d2, [-1, 7*7*64])
     d3 = tf.matmul(d3, dw3) + db3
     d3 = tf.nn.relu(d3)
+    d3 = tf.nn.dropout(d3, keep_prob)
 
 
     dw4 = tf.get_variable(name='dw4', shape=[1024, 1],
@@ -44,7 +47,7 @@ def discriminator(images, reuse_variables=None):
 
     return d4
 
-def generator(z, batch_size, z_dim):
+def generator(z, batch_size, z_dim, keep_prob):
   #  with tf.variable_scope(tf.get_variable_scope(), reuse=False) as scope2:
     gw1 = tf.get_variable(name='gw1', shape=[z_dim, 3136], dtype=tf.float32,
         initializer=tf.truncated_normal_initializer(stddev=0.02))
@@ -54,6 +57,7 @@ def generator(z, batch_size, z_dim):
     g1 = tf.reshape(g1, [-1, 56, 56, 1])
     g1 = tf.contrib.layers.batch_norm(g1, epsilon=1e-5, scope='bn1')
     g1 = tf.nn.relu(g1)
+    g1 = tf.nn.dropout(g1, keep_prob)
 
 
     gw2 = tf.get_variable(name='gw2', shape=[3, 3, 1, z_dim/2], dtype=tf.float32,
@@ -65,6 +69,7 @@ def generator(z, batch_size, z_dim):
     g2 = tf.contrib.layers.batch_norm(g2, epsilon=1e-5, scope='bn2')
     g2 = tf.nn.relu(g2)
     g2 = tf.image.resize_images(g2, [56, 56])
+    g2 = tf.nn.dropout(g2, keep_prob)
 
 
     gw3 = tf.get_variable(name='gw3', shape=[3, 3, z_dim/2, z_dim/4], dtype=tf.float32,
@@ -76,6 +81,7 @@ def generator(z, batch_size, z_dim):
     g3 = tf.contrib.layers.batch_norm(g3, epsilon=1e-5, scope='bn3')
     g3 = tf.nn.relu(g3)
     g3 = tf.image.resize_images(g3, [56, 56])
+    g3 = tf.nn.dropout(g3, keep_prob)
 
     gw4 = tf.get_variable(name='gw4', shape=[3, 3, z_dim/4, 1], dtype=tf.float32,
         initializer=tf.truncated_normal_initializer(stddev=0.02))
@@ -91,16 +97,19 @@ def main():
   mnist = input_data.read_data_sets("MNIST_data/")
   z_dimensions = 100
   batch_size = 64
-  sess = tf.Session()
+  keep_prob = 0.8
+  config = tf.ConfigProto(
+      gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.3))
+  sess = tf.Session(config=config)
   #  input of gengerator
   z_placeholder = tf.placeholder(name='z_placeholder', shape=[None, z_dimensions], dtype=tf.float32)
   #  inpurt of discriminator (real image)
   x_placeholder = tf.placeholder(name='x_placeholder', shape=[None, 28, 28, 1], dtype=tf.float32)
 
-  generated = generator(z_placeholder, batch_size, z_dimensions)
+  generated = generator(z_placeholder, batch_size, z_dimensions, keep_prob)
 
-  dx = discriminator(x_placeholder)
-  dg = discriminator(generated, reuse_variables=True)
+  dx = discriminator(x_placeholder, keep_prob)
+  dg = discriminator(generated, keep_prob, reuse_variables=True)
 
   d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
     logits=dx, labels=tf.ones_like(dx)))
@@ -121,7 +130,7 @@ def main():
   tf.summary.scalar('Generator_loss', g_loss)
   tf.summary.scalar('Discriminator_loss_real', d_loss_real)
   tf.summary.scalar('Discriminator_loss_fake', d_loss_fake)
-  tb_image = generator(z_placeholder, batch_size, z_dimensions)
+  tb_image = generator(z_placeholder, batch_size, z_dimensions, 1.0)
   tf.summary.image('Generated_image', tb_image, 5)
   merge_summary = tf.summary.merge_all()
   logdir = "tensorboard/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "/"
@@ -141,17 +150,19 @@ def main():
     if i % 100 == 0:
       print("dLossReal: %f, dLossFake: %f" % (dLossReal, dLossFake))
 
-  for i in range(100000):
-    z_batch = np.random.normal(0, 1, size=[batch_size, z_dimensions])
-    real_image_batch = mnist.train.next_batch(batch_size)[0].reshape([batch_size, 28, 28, 1])
+  for i in range(1000000):
+    if i % 2 == 0:
+      z_batch = np.random.normal(0, 1, size=[batch_size, z_dimensions])
+      real_image_batch = mnist.train.next_batch(batch_size)[0].reshape([batch_size, 28, 28, 1])
 
-    _, _, dLossReal, dLossFake = sess.run(
-        [d_trainer_real, d_trainer_fake, d_loss_real, d_loss_fake],
-        feed_dict={x_placeholder: real_image_batch, z_placeholder: z_batch})
+      _, _, dLossReal, dLossFake = sess.run(
+          [d_trainer_real, d_trainer_fake, d_loss_real, d_loss_fake],
+          feed_dict={x_placeholder: real_image_batch, z_placeholder: z_batch})
 
-    z_batch = np.random.normal(0, 1, size=[batch_size, z_dimensions])
-    _, gLoss = sess.run(
-        [g_trainer, g_loss], feed_dict={x_placeholder: real_image_batch, z_placeholder: z_batch})
+    if i % 1 == 0:
+      z_batch = np.random.normal(0, 1, size=[batch_size, z_dimensions])
+      _, gLoss = sess.run(
+          [g_trainer, g_loss], feed_dict={x_placeholder: real_image_batch, z_placeholder: z_batch})
 
     if i % 100 == 0:
       print("%d: dLossReal: %f, dLossFake: %f, gLoss: %f" % (i+1, dLossReal, dLossFake, gLoss))
@@ -160,14 +171,6 @@ def main():
       summary = sess.run(merge_summary, feed_dict={
           x_placeholder: real_image_batch, z_placeholder: z_batch})
       writer.add_summary(summary, global_step=i)
-
-
-  #  with tf.Session() as sess:
-  #    sess.run(tf.global_variables_initializer())
-  #    generated_image = sess.run(generated, feed_dict={z_placeholder: z_batch})
-  #    generated_image = generated_image.reshape([28, 28])
-  #    plt.imshow(generated_image, cmap='Greys')
-  #    plt.show()
 
 
 if __name__ == '__main__':
